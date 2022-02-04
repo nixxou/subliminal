@@ -4,7 +4,7 @@ import re
 
 from babelfish import Language, language_converters
 from guessit import guessit
-from requests import Session
+#from requests import Session
 
 from . import ParserBeautifulSoup, Provider
 from ..cache import SHOW_EXPIRATION_TIME, region
@@ -13,13 +13,13 @@ from ..matches import guess_matches
 from ..subtitle import Subtitle, fix_line_ending
 from ..utils import sanitize
 from ..video import Episode
-
+import requests
 logger = logging.getLogger(__name__)
 
 language_converters.register('addic7ed = subliminal.converters.addic7ed:Addic7edConverter')
 
 # Series cell matching regex
-show_cells_re = re.compile(b'<td class="version">.*?</td>', re.DOTALL)
+show_cells_re = re.compile(b'<td class="vr">.*?</td>', re.DOTALL)
 
 #: Series header parsing regex
 series_year_re = re.compile(r'^(?P<series>[ \w\'.:(),*&!?-]+?)(?: \((?P<year>\d{4})\))?$')
@@ -91,34 +91,24 @@ class Addic7edProvider(Provider):
         self.username = username
         self.password = password
         self.logged_in = False
-        self.session = None
+        self.cookies = {'wikisubtitlesuser': username,'wikisubtitlespass':password}
 
     def initialize(self):
-        self.session = Session()
-        self.session.headers['User-Agent'] = self.user_agent
+        #self.session = Session()
+        #self.session.headers['User-Agent'] = self.user_agent
 
         # login
         if self.username and self.password:
             logger.info('Logging in')
             data = {'username': self.username, 'password': self.password, 'Submit': 'Log in'}
-            r = self.session.post(self.server_url + 'dologin.php', data, allow_redirects=False, timeout=10)
-
-            if r.status_code != 302:
-                raise AuthenticationError(self.username)
-
             logger.debug('Logged in')
             self.logged_in = True
 
     def terminate(self):
         # logout
-        if self.logged_in:
-            logger.info('Logging out')
-            r = self.session.get(self.server_url + 'logout.php', timeout=10)
-            r.raise_for_status()
-            logger.debug('Logged out')
-            self.logged_in = False
+        logger.debug('Logged out')
+        self.logged_in = False
 
-        self.session.close()
 
     @region.cache_on_arguments(expiration_time=SHOW_EXPIRATION_TIME)
     def _get_show_ids(self):
@@ -130,7 +120,7 @@ class Addic7edProvider(Provider):
         """
         # get the show page
         logger.info('Getting show ids')
-        r = self.session.get(self.server_url + 'shows.php', timeout=10)
+        r = requests.get(self.server_url + 'shows.php', timeout=20, cookies=self.cookies)
         r.raise_for_status()
 
         # LXML parser seems to fail when parsing Addic7ed.com HTML markup.
@@ -145,7 +135,7 @@ class Addic7edProvider(Provider):
 
         # populate the show ids
         show_ids = {}
-        for show in soup.select('td.version > h3 > a[href^="/show/"]'):
+        for show in soup.select('td.vr > h3 > a[href^="/show/"]'):
             show_ids[sanitize(show.text)] = int(show['href'][6:])
         logger.debug('Found %d show ids', len(show_ids))
 
@@ -169,9 +159,10 @@ class Addic7edProvider(Provider):
         series_year = '%s %d' % (series, year) if year is not None else series
         params = {'search': series_year, 'Submit': 'Search'}
 
+        r = requests.get('http://www.addic7ed.com/srch.php', params=params, timeout=10)
+
         # make the search
         logger.info('Searching show ids with %r', params)
-        r = self.session.get(self.server_url + 'srch.php', params=params, timeout=10)
         r.raise_for_status()
         soup = ParserBeautifulSoup(r.content, ['lxml', 'html.parser'])
 
@@ -231,7 +222,7 @@ class Addic7edProvider(Provider):
     def query(self, show_id, series, season, year=None, country=None):
         # get the page of the season of the show
         logger.info('Getting the page of show id %d, season %d', show_id, season)
-        r = self.session.get(self.server_url + 'show/%d' % show_id, params={'season': season}, timeout=10)
+        r = requests.get(self.server_url + 'show/%d' % show_id, params={'season': season}, timeout=20, cookies=self.cookies)
         r.raise_for_status()
 
         if not r.content:
@@ -296,8 +287,8 @@ class Addic7edProvider(Provider):
     def download_subtitle(self, subtitle):
         # download the subtitle
         logger.info('Downloading subtitle %r', subtitle)
-        r = self.session.get(self.server_url + subtitle.download_link, headers={'Referer': subtitle.page_link},
-                             timeout=10)
+        r = requests.get(self.server_url + subtitle.download_link, headers={'Referer': subtitle.page_link},
+                             timeout=20)
         r.raise_for_status()
 
         if not r.content:
